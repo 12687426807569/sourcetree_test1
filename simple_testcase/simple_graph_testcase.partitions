@@ -1,13 +1,15 @@
 cut_size 2
-A 5
-C1
-C2
-C3
-C4
-C5
-B 5
-C6
+A 6
 C7
 C8
 C9
 C10
+C11
+C12
+B 6
+C1
+C2
+C3
+C4
+C6
+C5

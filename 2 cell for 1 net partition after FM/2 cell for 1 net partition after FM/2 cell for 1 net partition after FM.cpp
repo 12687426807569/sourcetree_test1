@@ -10,20 +10,21 @@
 #include<tuple>
 #include<unordered_map>
 #include<string>
+#include<numeric>
+#include<random>
 constexpr int A = 0, B = 1;
 struct GPart_Partition {
     GPart_Partition() {
-        idx = max_area = area = lb = 0;
+        idx  = area = lb = 0;
     }
     short idx;
-    double max_area, & ub = max_area, lb;
+    double  ub , lb;
 
     unsigned area;
     void report() const {
-        printf("part[%d]: area %d, max_area %f, min_area %f\n", idx, area, max_area, lb);
+        printf("part[%d]: area %d, max_area %f, min_area %f\n", idx, area, ub, lb);
     }
 };
-
 struct GPart_Edge {
     unsigned idx;
     short weight;
@@ -31,52 +32,40 @@ struct GPart_Edge {
     unsigned node_idx1;
     unsigned node_idx2;
 };
-
 struct GPart_Node {
     short idx;
     short area;
     short part_idx;
     short tmp_part_idx = -1;
-    //short task_idx = -1; 
     std::vector<unsigned> edges;
 };
-
 struct GPart_Graph {
-    vector<int>cell_program_id_to_input_id;//v[cell_program_id]=cell_input_id
-    unordered_map<int, int>cell_input_id_to_program_id;//v[cell_input_id]=cell_program_id
+    vector<int>cell_program_id_to_input_id;//a[cell_program_id]=cell_input_id
+    unordered_map<int, int>cell_input_id_to_program_id;//a[cell_input_id]=cell_program_id
 
     std::vector<GPart_Partition> parts;
     std::vector<GPart_Node> nodes;
     std::vector<GPart_Edge> edges;
     unsigned total_edge_weight = 0;
+    unsigned total_area = 0;
     unsigned cut_cost = 0;
 
     unsigned get_cut_cost(unsigned edge_idx) const {
         const GPart_Edge& edge = edges[edge_idx];
-        if (nodes[edge.node_idx1].part_idx
-            != nodes[edge.node_idx2].part_idx) {
+        if (nodes[edge.node_idx1].part_idx != nodes[edge.node_idx2].part_idx) {
             return edge.weight;
         }
         return 0;
     }
 };
-
 struct GPart_Task {
     std::vector<unsigned> nodes;
     std::vector<unsigned> edges;
     std::vector<short> parts;
 };
-
-
-
 void init_graph(GPart_Graph& graph, const string cell_file, const string net_file, const string partition_file) {
 
     const unsigned num_parts = 2;
-    //const unsigned num_nodes = 1000;
-    //const unsigned num_edges = 5000;
-    //const unsigned max_edge_weight = 10;
-    //const unsigned max_node_area = 5;
-    //const double   max_part_area_ratio = 1.2;
 
     graph.parts.resize(num_parts);
     GPart_Graph& G = graph;
@@ -84,7 +73,7 @@ void init_graph(GPart_Graph& graph, const string cell_file, const string net_fil
         ifstream fin;
         fin.open(cell_file);
         string cell_id, area;
-        unordered_map<int, int>cell_input_id_to_area;//v[cell_input_id]=area
+        unordered_map<int, int>cell_input_id_to_area;//a[cell_input_id]=area
         while (fin >> cell_id)//O(#cells)
         {
             fin >> area;
@@ -178,31 +167,35 @@ void init_graph(GPart_Graph& graph, const string cell_file, const string net_fil
         }
         fin.close();
     }
-    const auto [lb, ub] = [](const vector<GPart_Node>& nodes, const double r, const double epsilon)->pair<int, int> {
-        int sum = 0, max_area = 0;
-        for (auto& node : nodes) {
-            sum += node.area;
+    const auto [lb, ub] = [](GPart_Graph&g, const double r, const double epsilon)->pair<int, int> {
+        int   max_area = 0;
+        g.total_area = 0;
+        for (auto& node : g.nodes) {
+            g.total_area += node.area;
             if (node.area > max_area) max_area = node.area;
         }
-        int  S_opt = ceil(r * sum);//min(0.48*sum_area,0.5*sum_area-max_area)	
-        double max_S_p = (1 + epsilon) * S_opt;
-        return { sum - max_S_p, max_S_p };
-        }(graph.nodes, 0.5, 0.02);
+        int  S_opt = ceil(r * g.total_area);//definition of https://chriswalshaw.co.uk/partition/
+        int max_S_p =floor( (1 + epsilon) * S_opt);
+        return { g.total_area - max_S_p, max_S_p };
+        }(graph, 0.5, 0.04);
     for (unsigned i = 0; i < 2; i++) {
         graph.parts[i].idx = i;
         graph.parts[i].lb = lb;
-        graph.parts[i].max_area = ub;
+        graph.parts[i].ub = ub;
     }
     for (unsigned i = 0; i < graph.edges.size(); i++) {
         graph.cut_cost += graph.get_cut_cost(i);
     }
 }
-
-
-int random_init_task(GPart_Graph& graph, GPart_Task& task, unsigned task_size, ofstream& fout2)
+int random_init_task(GPart_Graph& graph, GPart_Task& task, int&task_size, ofstream& fout2/*, vector<int>& range*/)
 {
     task.nodes.clear();
-    task.edges.clear();//report cost
+    task.edges.clear();
+
+	//task_size = min(task_size, (int)range.size());
+	//task.nodes.insert(task.nodes.end(),make_move_iterator( range.end()- task_size), make_move_iterator(range.end()) );
+	//range.erase(range.end() - task_size, range.end());
+
     task.parts.resize(task_size);
     unsigned num_nodes = graph.nodes.size();
 
@@ -229,6 +222,8 @@ int random_init_task(GPart_Graph& graph, GPart_Task& task, unsigned task_size, o
         fout2 << "this task part A: cell num " << a[0].cell_num << ", area " << a[0].area
             << "; part B: cell num " << a[1].cell_num << ", area " << a[1].area << endl;
     }
+    for(int i=0;i<task_size;i++)
+		task.parts[i] = graph.nodes[task.nodes[i]].part_idx;
     for (unsigned i = 0; i < task_size; i++) {
         for (unsigned idx : graph.nodes[task.nodes[i]].edges) {
             if (!graph.edges[idx].selected) {
@@ -245,7 +240,6 @@ int random_init_task(GPart_Graph& graph, GPart_Task& task, unsigned task_size, o
     fout2 << "this task cut cost " << task_cut_cost << endl;
     return task_cut_cost;
 }
-
 void update_graph(GPart_Graph& graph, const GPart_Task& task, bool add)
 {
     for (unsigned idx : task.nodes) {
@@ -259,7 +253,6 @@ void update_graph(GPart_Graph& graph, const GPart_Task& task, bool add)
         }
     }
 
-    //printf("edge size = %ld\n", task.edges.size());
     for (unsigned idx : task.edges) {
         //if(graph.get_cut_cost(idx)>0) cout << "edge idx " << idx << " cut cost " << graph.get_cut_cost(idx) << endl;
         if (add) {
@@ -271,7 +264,6 @@ void update_graph(GPart_Graph& graph, const GPart_Task& task, bool add)
     }
 
 }
-
 void profile_graph(const GPart_Graph& graph)
 {
     for (unsigned i = 0; i < graph.parts.size(); i++) {
@@ -320,10 +312,9 @@ double evaluate( GPart_Graph& graph, const GPart_Task& task, unsigned move)
     }
     return cut_cost + balance_cost / 2;//先比cut size再比平衡,cut size是整數,balance_cost:A area \mapsto ((A area/ub)^2+(B area/ub)^2)/2恆<1
 }*/
-#include<tuple>
-tuple<double, bool, bool> evaluate(const GPart_Graph& graph, const GPart_Task& task, unsigned move, vector<int>& tmp_part_idx, int task_cut_cost)
-{
-    //(graph.nodes.size(), -1);
+tuple<int,int> evaluate(const GPart_Graph& graph, const GPart_Task& task, unsigned move,
+    vector<int>& tmp_part_idx){
+	//use int cost instead of double cost to avoid precision problem
     unsigned area[2] = { 0, 0 };
     for (unsigned i = 0; i < task.nodes.size(); i++) {
         //GPart_Node& node = graph.nodes[task.nodes[i]];
@@ -333,17 +324,15 @@ tuple<double, bool, bool> evaluate(const GPart_Graph& graph, const GPart_Task& t
         tmp_part_idx[task.nodes[i]] = part;
         area[part] += node.area;
     }
-    double balance_cost = 0;
     for (unsigned i = 0; i < graph.parts.size(); i++) {
         const GPart_Partition& part = graph.parts[i];
-        if (part.area + area[i] > part.max_area) {
+        if (part.area + area[i] > part.ub) {
             //return FLT_MAX;
-            return { graph.total_edge_weight,0,1 };
+            return { graph.total_edge_weight,graph.total_area};
         }
-        double ratio = double(part.area + area[i]) / double(part.max_area);
-        balance_cost += ratio * ratio;//(A area/all area)越遠離0.5,(A area)^2+(all area-A area)^2越大
     }
-    unsigned cut_cost = 0;
+	int imbalance_cost = labs(graph.parts[A].area + area[A] - graph.parts[B].area - area[B]);
+    int cut_cost = 0;
     for (unsigned edge_idx : task.edges) {
         const GPart_Edge& edge = graph.edges[edge_idx];
         const GPart_Node& n1 = graph.nodes[edge.node_idx1];
@@ -356,12 +345,10 @@ tuple<double, bool, bool> evaluate(const GPart_Graph& graph, const GPart_Task& t
             cut_cost += edge.weight;
         }
     }
-    if (cut_cost == task_cut_cost)return { cut_cost + balance_cost / 2,1,0 };
-    else return { cut_cost + balance_cost / 2,0,0 };
+    return { cut_cost ,imbalance_cost  };
 
     //return cut_cost + balance_cost/2;//先比cut size再比平衡,cut size是整數,balance_cost:A area \mapsto ((A area/ub)^2+(B area/ub)^2)/2恆<1
 }
-
 void commit(GPart_Graph& graph, GPart_Task& task, unsigned best_move)
 {
     for (unsigned i = 0; i < task.nodes.size(); i++) {
@@ -375,70 +362,85 @@ void commit(GPart_Graph& graph, GPart_Task& task, unsigned best_move)
         graph.edges[idx].selected = false;
     }
 }
-
 int main(int argc, char* argv[]) {
-
-    /*
-    if(argc <= 2 || !strcmp(argv[1], "-help")) {
-      help_command();
-      return 0;
-    }
-    */
     GPart_Graph graph;
-    string file_name_base = /*"simple_testcase/simple_graph_testcase";//*/"testcase/delaunay_n10";
+    string file_name_base = /*"../../simple_testcase/simple_graph_testcase";//*/"../../testcase/delaunay_n10";
     init_graph(graph, file_name_base + ".cells", file_name_base + ".nets", file_name_base + ".partitions");
     ofstream fout2("log.txt");
 
     printf("Initi partition:\n");
     profile_graph(graph);
 
-    unsigned num_trails = 5;
-    int task_size = min(20, (int)graph.nodes.size()); //smaller than 32
-    const int round_num = 10;
+    constexpr unsigned num_trails = 1;
+    int task_size = min(20, (int)graph.nodes.size()); 
     double total_time = 0;
     GPart_Task task;
-    for (unsigned round = 1; round <= round_num; round++) {
+    //vector<int> range(graph.nodes.size());
+    //iota(range.begin(), range.end(), 0);
+    //shuffle(range.begin(), range.end(), mt19937(12345));
+    for (unsigned round = 1; round <= num_trails; round++) {
         auto wcts = std::chrono::system_clock::now();
-        int task_cut_cost = random_init_task(graph, task, task_size, fout2);
+        int task_cut_cost = random_init_task(graph, task, task_size, fout2/*, range*/);
+        /*int not_changed_idx = 0;
+		for (unsigned i = 0; i < task_size; i++)
+			not_changed_idx += task.parts[i] << (i);*/
         update_graph(graph, task, false);
 
         unsigned num_explores = 1 << task_size;
+		ofstream cut_distribution("cut_distribution.txt"),imbalance_distribution("imbalance_distribution.txt");
         //printf("num explores %d\n", num_explores);
         int best_move = -1, local_min_idx = -1, local_out_of_lb_ub_num = 0, gobal_out_of_lb_ub_num = 0,
             local_cost_not_changed_num = 0, gobal_cost_not_changed_num = 0;
-        double best_cost = DBL_MAX, local_min = DBL_MAX;
+        int best_cut_cost = INT_MAX, best_imbalance_cost = INT_MAX, local_min_cut_cost = INT_MAX,local_min_imbalance_cost=INT_MAX;
         vector<int>tmp_part_idx(graph.nodes.size(), -1);
-#pragma omp parallel num_threads(4) firstprivate(local_min,local_min_idx,tmp_part_idx,local_out_of_lb_ub_num,local_cost_not_changed_num)
+//#pragma omp parallel num_threads(4) firstprivate(local_min,local_min_idx,tmp_part_idx,local_out_of_lb_ub_num,local_cost_not_changed_num)
         {
-#pragma omp for schedule(dynamic, 10000)
+//#pragma omp for schedule(dynamic, 10000)
             for (int j = 0; j < num_explores; j++) {
-                auto [cost, not_changed, out_of_lb_ub] = evaluate(graph, task, j, tmp_part_idx, task_cut_cost);
-                for (unsigned i = 0; i < task.nodes.size(); i++) {
+                /*if (j == not_changed_idx)
+                    cout << "test_not_change\n";*/
+                auto [cut_cost, imbalance_cost] = evaluate(graph, task, j, tmp_part_idx);
+				/*cut_distribution << cut_cost << endl;
+				imbalance_distribution << imbalance_cost << endl;*/
+                for (unsigned i = 0; i < task.nodes.size(); i++) {//cuda版本tmp_part_idx大小可設task.nodes.size()來節省gputhread記憶體
                     tmp_part_idx[task.nodes[i]] = -1;
                 }
+                /*if (imbalance_cost == graph.total_area) {
+                    local_out_of_lb_ub_num++;
+                    continue;
+                }*/
 
-                if (cost < local_min) {
-                    local_min = cost;
+                if (cut_cost < local_min_cut_cost) {
+                    local_min_cut_cost = cut_cost;
+                    local_min_imbalance_cost = imbalance_cost;
                     local_min_idx = j;
                 }
-                if (not_changed)
-                    local_cost_not_changed_num++;
-                if (out_of_lb_ub)
-                    local_out_of_lb_ub_num++;
+                else if (cut_cost == local_min_cut_cost && imbalance_cost < local_min_imbalance_cost) {
+                    local_min_imbalance_cost = imbalance_cost;
+                    local_min_idx = j;
+                }
+                /*if (task_cut_cost == cut_cost)
+                    local_cost_not_changed_num++;*/
             }
-#pragma omp critical
+//#pragma omp critical
             {
-                if (local_min < best_cost) {
-                    best_cost = local_min;
+                if (local_min_cut_cost < best_cut_cost) {
+                    best_cut_cost = local_min_cut_cost;
+					best_imbalance_cost = local_min_imbalance_cost;
                     best_move = local_min_idx;
                 }
-                gobal_cost_not_changed_num += local_cost_not_changed_num;
-                gobal_out_of_lb_ub_num += local_out_of_lb_ub_num;
+                else if (local_min_cut_cost == best_cut_cost && local_min_imbalance_cost < best_imbalance_cost) {
+                    best_imbalance_cost = local_min_imbalance_cost;
+                    best_move = local_min_idx;
+				}
+                /*gobal_cost_not_changed_num += local_cost_not_changed_num;
+                gobal_out_of_lb_ub_num += local_out_of_lb_ub_num;*/
             }
         }
-
-        fout2 << "the rate of move not change cost: " << gobal_cost_not_changed_num << endl;
-        fout2 << "the rate of move out of lb/ub: " << gobal_out_of_lb_ub_num/** 1.0 / num_explores */ << endl;
+		cut_distribution.close();
+		imbalance_distribution.close();
+        //fout2 << "the num of move not change cost: " << gobal_cost_not_changed_num << endl;
+        //fout2 << "the num of move out of lb/ub: " << gobal_out_of_lb_ub_num/** 1.0 / num_explores */ << endl;
         commit(graph, task, best_move);
 
         update_graph(graph, task, true);
@@ -451,6 +453,6 @@ int main(int argc, char* argv[]) {
         fflush(stdout);
     }
     fout2.close();
-    printf("average time: %.2lf seconds\n", total_time / round_num);
+    printf("average time: %.2lf seconds\n", total_time / num_trails);
     return 1;
 }

@@ -252,12 +252,6 @@ int main()
 			{
 #pragma omp for schedule(dynamic, 10000)
 				for (int i = 0; i < move_method_num; i++) {//在lb,ub外的case比在lb,ub內的case工作量短很多
-					/*if (i % 200000 == 0) { // 只打印部分
-						printf("i=%d handled by thread %d of %d\n",
-							i,
-							omp_get_thread_num(),
-							omp_get_num_threads());
-					}*/
 					double cut_size_batch_plus_unbalance_rate_s = compute_cut_size_and_A_area_if_move(partition_name_to_partition_area,
 						net_id_to_partition_name_to_cell_num, cell_id_to_partition_name, enumerate_cells, i, G, lb, ub);
 					if (cut_size_batch_plus_unbalance_rate_s < local_min) {
@@ -273,7 +267,7 @@ int main()
 					}
 				}
 			}
-			min_cut_size_for_testcase = floor(global_min);
+			min_cut_size_for_testcase = floor(global_min);//建議改用pair<int,int>{cut_cost,unbalance_score}，因為double可能會有誤差
 			MOVE(cell_id_to_partition_name, enumerate_cells, global_min_idx, G);
 			auto end = chrono::high_resolution_clock::now();
 			auto duration = chrono::duration_cast<chrono::milliseconds>(end - start);
