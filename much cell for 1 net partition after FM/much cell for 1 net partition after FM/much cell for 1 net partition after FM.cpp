@@ -39,6 +39,7 @@ class Mt19937Generator : public IRandomIntGenerator {
 	std::mt19937 rng;
 public:
 	Mt19937Generator() : rng(static_cast<unsigned int>(time(nullptr))) {}
+	Mt19937Generator(unsigned int seed) : rng(seed) {}
 	int Next(int min, int max) override {
 		std::uniform_int_distribution<int> dist(min, max);
 		return dist(rng);
@@ -48,6 +49,9 @@ class RandModGenerator : public IRandomIntGenerator {
 public:
 	RandModGenerator() {
 		srand(static_cast<unsigned int>(time(nullptr)));
+	}
+	RandModGenerator(unsigned int seed) {
+		srand(seed);
 	}
 	int Next(int min, int max) override {
 		return rand() % (max - min + 1) + min;
@@ -107,6 +111,7 @@ int file_read_partition(vector< partition_name_type>& cell_id_to_partition_name,
 	fin.open(partition_file);
 	fin >> t >> t;
 	int cut_size = stoi(t);
+	cout << "initial cost:" << cut_size << endl;
 	fin >> t >> t;
 	for (int num = stoi(t); num > 0; num--) {
 		fin >> t;
@@ -173,7 +178,7 @@ vector<int>get_random_i1_and_no_repeat_vector_from_i2(const int i1, vector<int> 
 	}
 	return ret;
 }
-double compute_cut_size_and_A_area_if_move(array< int, 2> partition_name_to_partition_area,
+pair<int,int> compute_cut_size_and_A_area_if_move(array< int, 2> partition_name_to_partition_area,
 	vector<array< int, 2>>net_id_to_partition_name_to_cell_num, const vector<partition_name_type>& cell_id_to_partition_name, const vector<cell_program_id_type>& V2, const int
 	move_int, const myGraph& G, const int lb, const int ub) {
 	int pow_2 = 1;
@@ -186,7 +191,7 @@ double compute_cut_size_and_A_area_if_move(array< int, 2> partition_name_to_part
 		pow_2 <<= 1;
 	}
 	if (partition_name_to_partition_area[A] > ub || partition_name_to_partition_area[A] < lb)
-		return DBL_MAX;//不符合平衡條件，返回MAX
+		return { INT_MAX,INT_MAX };//不符合平衡條件，返回MAX
 	pow_2 = 1;
 	for (const int cell_id : V2) {
 		if (move_int & pow_2) {
@@ -203,8 +208,7 @@ double compute_cut_size_and_A_area_if_move(array< int, 2> partition_name_to_part
 	for (auto& partition_name_to_cell_num_of_net : net_id_to_partition_name_to_cell_num)//O(#nets)
 		if (partition_name_to_cell_num_of_net[A] > 0 && partition_name_to_cell_num_of_net[B] > 0)
 			cut_size++;
-	return cut_size + ((double)partition_name_to_partition_area[A] / ub * partition_name_to_partition_area[A] + (double)
-		partition_name_to_partition_area[B] / ub * partition_name_to_partition_area[B]) / ub / 2;
+	return { cut_size, labs(partition_name_to_partition_area[A] - partition_name_to_partition_area[B]) };
 }
 void MOVE(vector<partition_name_type>& cell_id_to_partition_name, const
 	vector<cell_program_id_type>& V2, const int move_int, const myGraph& G) {
@@ -219,55 +223,99 @@ void MOVE(vector<partition_name_type>& cell_id_to_partition_name, const
 }
 int main()
 {
-	unique_ptr<IRandomIntGenerator> randGen_p = std::make_unique<Mt19937Generator>();
+	unique_ptr<IRandomIntGenerator> randGen_p = std::make_unique<RandModGenerator>(123);
 	ofstream delta_cut_size_out("delta_cut_size.txt");
 	for (int test_case = 1; test_case <= TEST_CASE_NUM; test_case++) {
 		cout << "Test case " << test_case << "\n";
-		string folder = "simplecase/";
-		string cell_file = folder + "test" + to_string(test_case) + ".cells";
-		string net_file = folder + "test" + to_string(test_case) + ".nets";
-		string partition_file = folder + "test" + to_string(test_case) + ".partitions";
+		string file_name_base = /*string("../../colab_testcase 10000 100 10000 2/test") + to_string(test_case);
+			//*/"../../../cpp/src/src/ISPD_benchmark/ibm01";
+		string cell_file = file_name_base + ".cells";
+		string net_file = file_name_base + ".nets";
+		string partition_file = file_name_base + ".partitions";
 		const myGraph G = file_read_g(cell_file, net_file);
 		const vector<int>range = [](int n)->vector<int>
 			{vector<int> V1(n); iota(V1.begin(), V1.end(), 0); return V1; }(G.cell_program_id_to_area.size());
 		vector< partition_name_type> cell_id_to_partition_name(G.cell_program_id_to_area.size());
 		const int initial_cut_size = file_read_partition(cell_id_to_partition_name, partition_file, G);
-		const auto [lb, ub] = my_BALANCE_CRITERION(G.cell_program_id_to_area, 0.5, 0.02);//c++17 auto[]
+		int total_area = 0;
+		for (int area : G.cell_program_id_to_area)
+			total_area += area;
+		const int ub = floor(0.55 * total_area), lb = total_area - ub;//definition of github.com/EricLu1218/Physical_Design_Automation/blob/main/Two-way_Min-cut_Partitioning/CS613500_HW2_spec.pdf
+		//const auto [lb, ub] = my_BALANCE_CRITERION(G.cell_program_id_to_area, 0.5, 0.02);//c++17 auto[]
 		int min_cut_size_for_testcase = initial_cut_size;
 		vector<array< int, 2>>net_id_to_partition_name_to_cell_num(G.netlist.size(), { 0,0 });
-		const int round_num = 100;
+		const int round_num = 10;
 		double total_time = 0;
 		const int enumerate_cell_num = min(max_enumerate_cell_num, (int)G.cell_program_id_to_area.size());
 		const int move_method_num = 1 << enumerate_cell_num;
 		for (unsigned round = 1; round <= round_num; round++) {
+			cout << "Round " << round << "\n";
 			array< int, 2>partition_name_to_partition_area =
 				cell_id_to_partition_name_generate_partition_name_to_partition_area(cell_id_to_partition_name, G.cell_program_id_to_area);//O(#cells)
 			cell_id_to_partition_name_generate_net_id_to_partition_name_to_cell_num(net_id_to_partition_name_to_cell_num, cell_id_to_partition_name, G.netlist);//O(maxDegree * #nets)
 			vector< cell_program_id_type>enumerate_cells = get_random_i1_and_no_repeat_vector_from_i2(enumerate_cell_num, range, *randGen_p);
 
 			auto start = chrono::high_resolution_clock::now();
-			double local_min = DBL_MAX, global_min = DBL_MAX;
-			int local_min_idx = -1, global_min_idx = -1;
-#pragma omp parallel /**/num_threads(1) firstprivate(local_min,local_min_idx)
+			int local_min_cut_cost = INT_MAX, local_min_imbalance_cost = INT_MAX, local_second_min_cut_cost = INT_MAX, 
+				global_min_cut_cost = INT_MAX, global_min_imbalance_cost = INT_MAX, global_second_min_cut_cost = INT_MAX;
+			int local_min_idx = -1, global_min_idx = -1, local_second_min_idx = -1, global_second_min_idx = -1;
+//#pragma omp parallel /**/num_threads(4) firstprivate(local_min_cut_cost,local_second_min_cut_cost,local_min_imbalance_cost,local_min_idx)
 			{
-#pragma omp for schedule(dynamic, 10000)
+//#pragma omp for schedule(dynamic, 10000)
 				for (int i = 0; i < move_method_num; i++) {//在lb,ub外的case比在lb,ub內的case工作量短很多
-					double cut_size_batch_plus_unbalance_rate_s = compute_cut_size_and_A_area_if_move(partition_name_to_partition_area,
+					auto[cut_cost,imbalance_cost] = compute_cut_size_and_A_area_if_move(partition_name_to_partition_area,
 						net_id_to_partition_name_to_cell_num, cell_id_to_partition_name, enumerate_cells, i, G, lb, ub);
-					if (cut_size_batch_plus_unbalance_rate_s < local_min) {
-						local_min = cut_size_batch_plus_unbalance_rate_s;
-						local_min_idx = i;
+					
+					if (cut_cost < local_min_cut_cost) {
+						cout << "local_second_min_cut_cost change:" << local_second_min_cut_cost << "->" << local_min_cut_cost << "\n";
+						local_second_min_cut_cost = local_min_cut_cost;
+						local_second_min_idx = local_min_idx;
+						local_min_cut_cost = cut_cost;
+						local_min_imbalance_cost = imbalance_cost;
+						local_min_idx =i;
+					}
+					else if (cut_cost == local_min_cut_cost ){
+						if (imbalance_cost < local_min_imbalance_cost) {
+							local_min_imbalance_cost = imbalance_cost;
+							local_min_idx = i;
+						}
+					}
+					else if (cut_cost < local_second_min_cut_cost) {
+						cout << "local_second_min_cut_cost change:" << local_second_min_cut_cost << "->" << cut_cost << "\n";
+						local_second_min_cut_cost = cut_cost;
+						local_second_min_idx = i;
 					}
 				}
-#pragma omp critical
+//#pragma omp critical
 				{
-					if (local_min < global_min) {
-						global_min = local_min;
+					if (local_min_cut_cost < global_min_cut_cost) {
+						cout << "global_min_cut_cost change:" << global_min_cut_cost << "->" << local_min_cut_cost << "\n";
+						//global_second_min_cut_cost = min(global_min_cut_cost, local_second_min_cut_cost);
+						if(local_second_min_cut_cost<global_min_cut_cost){
+							global_second_min_cut_cost=local_second_min_cut_cost;
+							global_second_min_idx = local_second_min_idx;
+						}
+						else {
+							global_second_min_cut_cost = global_min_cut_cost;
+							global_second_min_idx = global_min_idx;
+						}
+						global_min_cut_cost = local_min_cut_cost;
+						global_min_imbalance_cost = local_min_imbalance_cost;
 						global_min_idx = local_min_idx;
+					}
+					else if (local_min_cut_cost == global_min_cut_cost ){
+						if (local_min_imbalance_cost < global_min_imbalance_cost) {
+							global_min_imbalance_cost = local_min_imbalance_cost;
+							global_min_idx = local_min_idx;
+						}
+					}
+					else if (local_min_cut_cost < global_second_min_cut_cost) {
+						global_second_min_cut_cost = local_min_cut_cost;
+						global_second_min_idx = local_min_idx;
 					}
 				}
 			}
-			min_cut_size_for_testcase = floor(global_min);//建議改用pair<int,int>{cut_cost,unbalance_score}，因為double可能會有誤差
+			min_cut_size_for_testcase = floor(global_min_cut_cost);//建議改用pair<int,int>{cut_cost,unbalance_score}，因為double可能會有誤差
 			MOVE(cell_id_to_partition_name, enumerate_cells, global_min_idx, G);
 			auto end = chrono::high_resolution_clock::now();
 			auto duration = chrono::duration_cast<chrono::milliseconds>(end - start);
@@ -277,7 +325,10 @@ int main()
 			for (int i = 0; i < cell_id_to_partition_name.size(); i++)
 				area[cell_id_to_partition_name[i]] += G.cell_program_id_to_area[i];
 			cout << "A area:" << area[A] << "\n" << "B area:" << area[B] << "\n";
-			cout << "test_min_cut_size:" << min_cut_size_for_testcase << endl;
+			cout << "test_min_cut_size:" << min_cut_size_for_testcase << endl 
+				<< "test_min_idx:" << global_min_idx << "\n"
+				<< "test_second_min_cut_size:" << global_second_min_cut_cost << "\n"
+				<< "test_second_min_idx:" << global_second_min_idx << "\n";
 		}
 		cout << "Average time per round: " << total_time / round_num << " ms\nmin cut size:" << min_cut_size_for_testcase << "\n";
 		delta_cut_size_out << initial_cut_size << "->" << min_cut_size_for_testcase << "\n";

@@ -301,7 +301,7 @@ pair<int, int> BEST_MOVES(const vector<tuple<int, cell_program_id_type, int>>&
 	for (int i = 0; i < order.size();) {
 		sum += get<2>(order[i]);
 		i++;
-		if (Gm < sum) {
+		if (Gm <= sum) {
 			Gm = sum;
 			m = i;
 		}
@@ -334,7 +334,7 @@ int main()
 	for (int test_case = 1; test_case <= TEST_CASE_NUM; test_case++) {
 		chrono::high_resolution_clock::time_point start = chrono::high_resolution_clock::now();
 		string file_name_base = /*string("../../colab_testcase 10000 100 10000 2/test") + to_string(test_case);
-			//*/"../../testcase/delaunay_n10";
+			//*/"../../ISPD_benchmark/ibm01";
 		string cell_file = file_name_base + ".cells";
 		string net_file = file_name_base + ".nets";
 		ofstream fout(file_name_base + ".partitions");
@@ -342,7 +342,7 @@ int main()
 		int total_area = 0;
 		for (int area : G.cell_program_id_to_area)
 			total_area += area;
-		const int ub = floor(0.5 * total_area + total_area / 20.0),lb=total_area - ub ;//definition of github.com/EricLu1218/Physical_Design_Automation/blob/main/Two-way_Min-cut_Partitioning/CS613500_HW2_spec.pdf		
+		const int ub = floor(0.55 * total_area ),lb=total_area - ub ;//definition of github.com/EricLu1218/Physical_Design_Automation/blob/main/Two-way_Min-cut_Partitioning/CS613500_HW2_spec.pdf		
 		//const auto [lb, ub] = my_BALANCE_CRITERION(G.cell_program_id_to_area, 0.5, 0.04);	//c++17 auto[]
 		array< partition_information, 2> partition_informations = PARTITION((ub + lb) / 2, G);
 		int Gm = INT_MAX;
