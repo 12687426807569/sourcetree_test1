@@ -228,7 +228,7 @@ int main()
 	for (int test_case = 1; test_case <= TEST_CASE_NUM; test_case++) {
 		cout << "Test case " << test_case << "\n";
 		string file_name_base = /*string("../../colab_testcase 10000 100 10000 2/test") + to_string(test_case);
-			//*/"../../../cpp/src/src/ISPD_benchmark/ibm01";
+			//*/"../../ISPD_benchmark/ibm01";//"../../../cpp/src/src/ISPD_benchmark/ibm01";
 		string cell_file = file_name_base + ".cells";
 		string net_file = file_name_base + ".nets";
 		string partition_file = file_name_base + ".partitions";
