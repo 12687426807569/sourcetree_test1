@@ -132,15 +132,15 @@ myGraph file_read(const string cell_file, const string net_file)
 	fin.close();
 	return G;
 }
-pair<int, int> my_BALANCE_CRITERION(const vector<int>& cell_program_id_to_area, const double r, const double epsilon) {
+pair<int, int> my_BALANCE_CRITERION(const vector<int>& cell_program_id_to_area, const int P, const int x) {
 	int sum = 0, max_area = 0;
 	for (int area : cell_program_id_to_area) {// C++17 structured binding
 		sum += area;
 		if (area > max_area) max_area = area;
 	}
-	int  S_opt = ceil(r * sum);//definition of https://chriswalshaw.co.uk/partition/
-	int max_S_p =floor( (1 + epsilon) * S_opt);//0.52*sum_area
-	if(ceil(r * sum) + max_area> max_S_p) cout<<"imbalance rate too small",exit(1);//min(0.48*sum_area,0.5*sum_area-max_area)
+	int  S_opt = (P-1+ sum)/P;//definition of https://chriswalshaw.co.uk/partition/
+	int max_S_p = S_opt+  x* S_opt/100 ;
+	if(S_opt + max_area> max_S_p) cout<<"imbalance rate too small",exit(1);//min(0.48*sum_area,0.5*sum_area-max_area)
 	return {sum - max_S_p,  max_S_p };
 }
 array< partition_information, 2> PARTITION(const int mean, const myGraph& G) {
@@ -334,7 +334,7 @@ int main()
 	for (int test_case = 1; test_case <= TEST_CASE_NUM; test_case++) {
 		chrono::high_resolution_clock::time_point start = chrono::high_resolution_clock::now();
 		string file_name_base = /*string("../../colab_testcase 10000 100 10000 2/test") + to_string(test_case);
-			//*/"../../ISPD_benchmark/ibm01";
+			//*/"../../testcase/delaunay_n10";
 		string cell_file = file_name_base + ".cells";
 		string net_file = file_name_base + ".nets";
 		ofstream fout(file_name_base + ".partitions");
@@ -342,8 +342,8 @@ int main()
 		int total_area = 0;
 		for (int area : G.cell_program_id_to_area)
 			total_area += area;
-		const int ub = floor(0.55 * total_area ),lb=total_area - ub ;//definition of github.com/EricLu1218/Physical_Design_Automation/blob/main/Two-way_Min-cut_Partitioning/CS613500_HW2_spec.pdf		
-		//const auto [lb, ub] = my_BALANCE_CRITERION(G.cell_program_id_to_area, 0.5, 0.04);	//c++17 auto[]
+		//const int ub = floor(0.501 * total_area) , lb = total_area - ub;//definition of github.com/EricLu1218/Physical_Design_Automation/blob/main/Two-way_Min-cut_Partitioning/CS613500_HW2_spec.pdf		
+		const auto [lb, ub] = my_BALANCE_CRITERION(G.cell_program_id_to_area, 2, 10);	//c++17 auto[]
 		array< partition_information, 2> partition_informations = PARTITION((ub + lb) / 2, G);
 		int Gm = INT_MAX;
 		vector<tuple<int, cell_program_id_type, int>> order;//(from,cell,delta_g)
@@ -386,6 +386,22 @@ int main()
 			if (Gm > 0)
 				CONFIRM_MOVES(partition_informations, order, m, G);//order[0] to order[m-1] are the best moves,cancel m to order.size()-1 moves
 		}
+		//交換測試
+		/*[&partition_informations, &G, ub]() {
+			auto cell0 = *partition_informations[A].cells.begin(),
+				cell1 = *partition_informations[B].cells.begin();
+			cout << "swap test :" << G.cell_program_id_to_input_id[cell0] << " and " << G.cell_program_id_to_input_id[cell1] << endl;
+			partition_informations[A].cells.erase(cell0);
+			partition_informations[B].cells.erase(cell1);
+			partition_informations[A].cells.insert(cell1);
+			partition_informations[B].cells.insert(cell0);
+			partition_informations[A].part_area += G.cell_program_id_to_area.at(cell1) - G.cell_program_id_to_area.at(cell0);
+			partition_informations[B].part_area += G.cell_program_id_to_area.at(cell0) - G.cell_program_id_to_area.at(cell1);
+			if (partition_informations[A].part_area > ub || partition_informations[B].part_area > ub) {
+				cout << "swap fail due to imbalance\n";
+				exit(1);
+			}
+			}();*/
 		auto [net_info_temporary, cell_info_temporary] = using_PARTITION(
 			partition_informations, G);
 		fout << "cut_size ";

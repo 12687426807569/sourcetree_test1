@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36401.2 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "much_cell_1_net_cuda", "much_cell_1_net_cuda\much_cell_1_net_cuda.vcxproj", "{B11FE753-D148-619E-C49B-FED5B1A82D94}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{B11FE753-D148-619E-C49B-FED5B1A82D94}.Debug|x64.ActiveCfg = Debug|x64
+		{B11FE753-D148-619E-C49B-FED5B1A82D94}.Debug|x64.Build.0 = Debug|x64
+		{B11FE753-D148-619E-C49B-FED5B1A82D94}.Release|x64.ActiveCfg = Release|x64
+		{B11FE753-D148-619E-C49B-FED5B1A82D94}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {A12F837B-F058-4556-866B-F5DEAAB97B63}
+	EndGlobalSection
+EndGlobal

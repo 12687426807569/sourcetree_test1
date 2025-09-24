@@ -1,7 +1,6 @@
 ﻿using namespace std;
-constexpr int max_enumerate_cell_num = 20;
-#define TEST_CASE_NUM 1
-#include <omp.h>
+#include "cuda_runtime.h"
+#include "device_launch_parameters.h"
 #include <iostream>
 #include<fstream>
 #include<numeric>
@@ -22,8 +21,8 @@ constexpr int max_enumerate_cell_num = 20;
 #include <array>
 #include<chrono>
 #include <memory>
-#define locked true
-#define unlocked false
+#include <execution>
+constexpr int max_enumerate_cell_num = 20;
 #define A   0
 #define B   1
 using cell_input_id_type = int;
@@ -58,11 +57,12 @@ public:
 	}
 };
 struct myGraph {
-	vector<int>cell_program_id_to_area;//V[cell_program_id]=area
-	vector<cell_input_id_type>cell_program_id_to_input_id;//v[cell_program_id]=cell_input_id
+	vector<int>cell_program_id_to_area;//a[cell_program_id]=area
+	vector<cell_input_id_type>cell_program_id_to_input_id;//a[cell_program_id]=cell_input_id
 	unordered_map<cell_input_id_type, cell_program_id_type>cell_input_id_to_program_id;//v[cell_input_id]=cell_program_id
 	vector<vector<cell_program_id_type>> netlist;//netlist[0]  for n1,v[net_id]={cell_program_id:cell_program_id conneted net_id}
 	vector< vector<net_id_type>>netlist_T;//v[cell_program_id]={net_id:net_id conneted cell_program_id}
+	int total_area, total_edge_weight;
 };
 myGraph file_read_g(const string cell_file, const string net_file)
 {
@@ -78,7 +78,8 @@ myGraph file_read_g(const string cell_file, const string net_file)
 		cell_input_id_to_area[stoi(cell_id.substr(1))] = stoi(area);
 	}
 	int i = 0;
-	for (auto [cell_input_id, area] : cell_input_id_to_area) {
+	for (auto &a : cell_input_id_to_area) {
+		auto cell_input_id = a.first, area = a.second;
 		G.cell_program_id_to_area.push_back(area);
 		G.cell_program_id_to_input_id.push_back(cell_input_id);
 		G.cell_input_id_to_program_id[cell_input_id] = i;//O(1)
@@ -102,10 +103,13 @@ myGraph file_read_g(const string cell_file, const string net_file)
 		G.netlist.push_back(move(cells));
 	}
 	fin.close();
+	G.total_area = accumulate(G.cell_program_id_to_area.begin(), G.cell_program_id_to_area.end(), 0);
+	G.total_edge_weight = G.netlist.size();//每條邊權重1
 	return G;
 }
-int file_read_partition(vector< partition_name_type>& cell_id_to_partition_name, const string partition_file, const
-	myGraph& G) {
+int file_read_partition (vector< partition_name_type> * cell_id_to_partition_name,const string& partition_file, const
+myGraph& G) {
+	cell_id_to_partition_name->resize(G.cell_program_id_to_area.size());
 	string t;
 	ifstream fin;
 	fin.open(partition_file);
@@ -116,25 +120,22 @@ int file_read_partition(vector< partition_name_type>& cell_id_to_partition_name,
 	for (int num = stoi(t); num > 0; num--) {
 		fin >> t;
 		int cell_id = G.cell_input_id_to_program_id.at(stoi(t.substr(1)));//O(1)
-		cell_id_to_partition_name[cell_id] = A;
+		(*cell_id_to_partition_name)[cell_id] = A;
 	}
 	fin >> t >> t;
 	for (int num = stoi(t); num > 0; num--) {
 		fin >> t;
 		int cell_id = G.cell_input_id_to_program_id.at(stoi(t.substr(1)));//O(1)
-		cell_id_to_partition_name[cell_id] = B;
+		(*cell_id_to_partition_name)[cell_id] = B;
 	}
 	fin.close();
-	return  cut_size;
+	return  cut_size ;
 }
-pair<int, int> my_BALANCE_CRITERION(const vector<int>& cell_program_id_to_area, const double r, const double epsilon) {//O(#cells)
-	int sum = 0, max_area = 0;
-	for (const int area : cell_program_id_to_area) {
-		sum += area;
-		if (area > max_area) max_area = area;
-	}
-	int lb = min(floor(r * sum) - max_area, floor((r - epsilon) * sum));//min(0.48*sum_area,0.5*sum_area-max_area)
-	return { lb, sum - lb };
+pair<int, int> my_BALANCE_CRITERION(const myGraph& G, const /*double r*/unsigned P , const /*double epsilon*/unsigned x) {//O(#cells)
+	//definition of https://chriswalshaw.co.uk/partition/
+	int  S_opt = (G.total_area + P - 1) / P;//ceil(1.0*graph.total_area/P)用double不准
+	int max_S_p = S_opt * (100 + x) / 100;
+	return { G.total_area - max_S_p, max_S_p };
 }
 array<int, 2>cell_id_to_partition_name_generate_partition_name_to_partition_area(
 	const vector<partition_name_type>& cell_id_to_partition_name, const vector<int>& cell_program_id_to_area) {
@@ -144,57 +145,47 @@ array<int, 2>cell_id_to_partition_name_generate_partition_name_to_partition_area
 	}
 	return partition_name_to_partition_area;
 }
-void cell_id_to_partition_name_generate_net_id_to_partition_name_to_cell_num(vector<array< int, 2>>& net_id_to_partition_name_to_cell_num,
-	const vector< partition_name_type>& cell_id_to_partition_name, const vector<vector<cell_program_id_type>>& netlist) {
-	for (int i = 0; i < netlist.size(); i++) {
+vector<array< int, 2>> cell_id_to_partition_name_generate_net_id_to_partition_name_to_cell_num(
+	const vector< partition_name_type>& cell_id_to_partition_name, const myGraph& G) {
+	vector<array< int, 2>> net_id_to_partition_name_to_cell_num(G.netlist.size(), { 0,0 });
+	for (int i = 0; i < G.netlist.size(); i++) {
 		net_id_to_partition_name_to_cell_num[i] = { 0,0 };
-		for (int cell_id : netlist[i])
+		for (int cell_id :G.netlist[i])
 			net_id_to_partition_name_to_cell_num[i][cell_id_to_partition_name[cell_id]]++;
 	}
+	return move(net_id_to_partition_name_to_cell_num);
 }
-vector<int>get_random_i1_and_no_repeat_vector_from_i2(const myGraph& G,
-	const int i1, vector<int> i2, IRandomIntGenerator& randGen,int round=0) {
-	vector<int>ret(i1);
-	if (i1 > i2.size()) {
+vector<int>get_random_i1_and_no_repeat_vector_from_0_to_i2(//const myGraph& G,
+	const int num, int max_plus_1, IRandomIntGenerator& randGen) {
+	const static vector<int>range = [](int n)->vector<int> {vector<int> V1(n); iota(V1.begin(), V1.end(), 0); return V1; }(max_plus_1);
+
+	vector<int>ret(num);
+	if (num > max_plus_1) {
 		cerr << "Error: i1 is larger than the size of i2." << endl;
 		exit(EXIT_FAILURE);
 	}
-	/*if (round == 1) {
-		unordered_set<int> selected_int{G.cell_input_id_to_program_id.at( 7089), G.cell_input_id_to_program_id.at(2902) };
-		ret[0] = i2[G.cell_input_id_to_program_id.at(7089)];
-		ret[1] = i2[G.cell_input_id_to_program_id.at(2902)];
-		for (int i = 2; i < i1; i++) {
-			int random_index;
-			do {
-				random_index = randGen.Next(0, i2.size() - 1);
-			} while (selected_int.count(random_index) > 0);//如果已經選過了，重新抽取//碰撞機率<0.5
-			selected_int.insert(random_index);
-			ret[i] = i2[random_index];
-		}
-		return ret;
-	}*/
-	if (i1 > i2.size() / 2) {
-		for (int i = 0, i2_size_1 = i2.size() - 1; i < i1; i++) {
+	if (num > max_plus_1 / 2) {
+		auto range_copy = range;
+		for (int i = 0, i2_size_1 = max_plus_1 - 1; i < num; i++) {
 			int random_index = randGen.Next(i, i2_size_1);
-			ret[i] = i2[random_index];
-			i2[random_index] = i2[i];
+			ret[i] = range_copy[random_index];
+			range_copy[random_index] = range_copy[i];
 		}
 	}
 	else {
-
 		unordered_set<int> selected_int;
-		for (int i = 2; i < i1; i++) {
+		for (int i = 2; i < num; i++) {
 			int random_index;
 			do {
-				random_index = randGen.Next(0, i2.size() - 1);
+				random_index = randGen.Next(0, max_plus_1 - 1);
 			} while (selected_int.count(random_index) > 0);//如果已經選過了，重新抽取//碰撞機率<0.5
 			selected_int.insert(random_index);
-			ret[i] = i2[random_index];
+			ret[i] = range[random_index];
 		}
 	}
 	return ret;
 }
-pair<int,int> compute_cut_size_and_A_area_if_move(array< int, 2> partition_name_to_partition_area,
+pair<int, int> compute_cut_size_and_A_area_if_move(array< int, 2> partition_name_to_partition_area,
 	vector<array< int, 2>>net_id_to_partition_name_to_cell_num, const vector<partition_name_type>& cell_id_to_partition_name, const vector<cell_program_id_type>& V2, const int
 	move_int, const myGraph& G, const int lb, const int ub) {
 	int pow_2 = 1;
@@ -237,6 +228,16 @@ void MOVE(vector<partition_name_type>& cell_id_to_partition_name, const
 	}
 	return;
 }
+struct cost_type {
+	int cut_cost;
+	int balance_cost;
+	unsigned move_idx;
+	__host__ __device__ bool operator<(const cost_type& right) {
+		if (cut_cost < right.cut_cost)return true;
+		if (cut_cost == right.cut_cost && balance_cost < right.balance_cost)return true;
+		return false;
+	}
+};
 int main()
 {
 	unique_ptr<IRandomIntGenerator> randGen_p = std::make_unique<RandModGenerator>(123);
@@ -244,37 +245,17 @@ int main()
 	//for (int test_case = 1; test_case <= TEST_CASE_NUM; test_case++) {
 	//cout << "Test case " << test_case << "\n";
 	string file_name_base = /*string("../../colab_testcase 10000 100 10000 2/test") + to_string(test_case);
-		//*/"../../ISPD_benchmark/ibm01";//"../../../cpp/src/src/ISPD_benchmark/ibm01";
+		//*/"../../ISPD_benchmark/ibm01";
 	string cell_file = file_name_base + ".cells";
 	string net_file = file_name_base + ".nets";
-	//string partition_file = file_name_base + ".partitions";
+	string partition_file = file_name_base + ".partitions";
 	const myGraph G = file_read_g(cell_file, net_file);
-	const vector<int>range = [](int n)->vector<int>
-		{vector<int> V1(n); iota(V1.begin(), V1.end(), 0); return V1; }(G.cell_program_id_to_area.size());
-	vector< partition_name_type> cell_id_to_partition_name(G.cell_program_id_to_area.size());
-	//const int initial_cut_size = file_read_partition(cell_id_to_partition_name, partition_file, G);
-	 [&cell_id_to_partition_name ,&G]() {
-		ifstream part_fin("../../ISPD_benchmark/ibm01.part.2");
-		int part_name;
-		for (int i = 1; i <= G.cell_program_id_to_area.size(); i++) {
-			part_fin >> part_name;
-			cell_id_to_partition_name[G.cell_input_id_to_program_id.at( i)] = part_name;
-		}
-		part_fin.close();
-		}();
-	int total_area = 0;
-	for (int area : G.cell_program_id_to_area)
-		total_area += area;
-	const int ub = floor(0.52 * total_area), lb = total_area - ub;//definition of github.com/EricLu1218/Physical_Design_Automation/blob/main/Two-way_Min-cut_Partitioning/CS613500_HW2_spec.pdf
-	//const auto [lb, ub] = my_BALANCE_CRITERION(G.cell_program_id_to_area, 0.5, 0.02);//c++17 auto[]
-	vector<array< int, 2>>net_id_to_partition_name_to_cell_num(G.netlist.size(), { 0,0 });
-	cell_id_to_partition_name_generate_net_id_to_partition_name_to_cell_num(net_id_to_partition_name_to_cell_num, cell_id_to_partition_name, G.netlist);//O(maxDegree * #nets)
-	int initial_cut_size=0;
-	for (int i = 0; i < G.netlist.size(); i++)
-		if (net_id_to_partition_name_to_cell_num[i][0] > 0 && net_id_to_partition_name_to_cell_num[i][1] > 0) {
-			//cout << i << endl;
-			initial_cut_size++;
-		}
+	vector< partition_name_type> cell_id_to_partition_name; 
+	int initial_cut_size= file_read_partition(&cell_id_to_partition_name,partition_file, G);
+	int lb, ub;
+	tie(lb, ub) = my_BALANCE_CRITERION(G, 2, 2);////definition of https://chriswalshaw.co.uk/partition/
+	vector<array< int, 2>>net_id_to_partition_name_to_cell_num=
+		cell_id_to_partition_name_generate_net_id_to_partition_name_to_cell_num(  cell_id_to_partition_name, G);
 	cout << "initial cut size:" << initial_cut_size << "\n";
 	int min_cut_size_for_testcase = initial_cut_size;
 	const int round_num = 100;
@@ -285,13 +266,36 @@ int main()
 		cout << "Round " << round << "\n";
 		array< int, 2>partition_name_to_partition_area =
 			cell_id_to_partition_name_generate_partition_name_to_partition_area(cell_id_to_partition_name, G.cell_program_id_to_area);//O(#cells)
-		cell_id_to_partition_name_generate_net_id_to_partition_name_to_cell_num(net_id_to_partition_name_to_cell_num, cell_id_to_partition_name, G.netlist);//O(maxDegree * #nets)
-		vector< cell_program_id_type>enumerate_cells = get_random_i1_and_no_repeat_vector_from_i2(G,enumerate_cell_num, range, *randGen_p, round);
-
+		net_id_to_partition_name_to_cell_num=cell_id_to_partition_name_generate_net_id_to_partition_name_to_cell_num(
+			cell_id_to_partition_name, G);//O(maxDegree * #nets)
+		vector< cell_program_id_type>enumerate_cells = get_random_i1_and_no_repeat_vector_from_0_to_i2(
+			enumerate_cell_num, G.cell_program_id_to_area.size(), *randGen_p);
+		array<int,2> affected_part_area=[&]() {
+			array<int, 2> affected_part_area = { 0,0 };
+			for (const int cell_id : enumerate_cells) {
+				affected_part_area[cell_id_to_partition_name[cell_id]] += G.cell_program_id_to_area[cell_id];
+			}
+			return affected_part_area;
+			}();
+		vector<net_id_type> affected_nets=[&]() {
+			unordered_set<net_id_type> affected_nets_set;
+			for (const int cell_id : enumerate_cells) {
+				for (const int net_id : G.netlist_T[cell_id]) {
+					affected_nets_set.insert(net_id);
+				}
+			}
+			return vector<net_id_type>(affected_nets_set.begin(), affected_nets_set.end());
+			}();
+		int affected_cut_size = [&]() {
+			int cut_size = 0;
+			for (const int net_id : affected_nets) {
+				if (net_id_to_partition_name_to_cell_num[net_id][A] > 0 && net_id_to_partition_name_to_cell_num[net_id][B] > 0)
+					cut_size++;
+			}
+			return cut_size;
+			}();
 		auto start = chrono::high_resolution_clock::now();
-		int local_min_cut_cost = INT_MAX, local_min_imbalance_cost = INT_MAX, local_second_min_cut_cost = INT_MAX,
-			global_min_cut_cost = INT_MAX, global_min_imbalance_cost = INT_MAX, global_second_min_cut_cost = INT_MAX;
-		int local_min_idx = -1, global_min_idx = -1, local_second_min_idx = -1, global_second_min_idx = -1;
+		cost_type global_min_cost = {G.total_edge_weight,G.total_area,INT_MAX}, global_second_min_cost= global_min_cost;
 		//#pragma omp parallel /**/num_threads(4) firstprivate(local_min_cut_cost,local_second_min_cut_cost,local_min_imbalance_cost,local_min_idx)
 		{
 			//#pragma omp for schedule(dynamic, 10000)
@@ -369,3 +373,120 @@ int main()
 	delta_cut_size_out.close();
 	return 0;
 }
+/*
+cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size);
+
+__global__ void addKernel(int *c, const int *a, const int *b)
+{
+    int i = threadIdx.x;
+    c[i] = a[i] + b[i];
+}
+
+int main()
+{
+    const int arraySize = 5;
+    const int a[arraySize] = { 1, 2, 3, 4, 5 };
+    const int b[arraySize] = { 10, 20, 30, 40, 50 };
+    int c[arraySize] = { 0 };
+
+    // Add vectors in parallel.
+    cudaError_t cudaStatus = addWithCuda(c, a, b, arraySize);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "addWithCuda failed!");
+        return 1;
+    }
+
+    printf("{1,2,3,4,5} + {10,20,30,40,50} = {%d,%d,%d,%d,%d}\n",
+        c[0], c[1], c[2], c[3], c[4]);
+
+    // cudaDeviceReset must be called before exiting in order for profiling and
+    // tracing tools such as Nsight and Visual Profiler to show complete traces.
+    cudaStatus = cudaDeviceReset();
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaDeviceReset failed!");
+        return 1;
+    }
+
+    return 0;
+}
+
+// Helper function for using CUDA to add vectors in parallel.
+cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size)
+{
+    int *dev_a = 0;
+    int *dev_b = 0;
+    int *dev_c = 0;
+    cudaError_t cudaStatus;
+
+    // Choose which GPU to run on, change this on a multi-GPU system.
+    cudaStatus = cudaSetDevice(0);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
+        goto Error;
+    }
+
+    // Allocate GPU buffers for three vectors (two input, one output)    .
+    cudaStatus = cudaMalloc((void**)&dev_c, size * sizeof(int));
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMalloc failed!");
+        goto Error;
+    }
+
+    cudaStatus = cudaMalloc((void**)&dev_a, size * sizeof(int));
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMalloc failed!");
+        goto Error;
+    }
+
+    cudaStatus = cudaMalloc((void**)&dev_b, size * sizeof(int));
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMalloc failed!");
+        goto Error;
+    }
+
+    // Copy input vectors from host memory to GPU buffers.
+    cudaStatus = cudaMemcpy(dev_a, a, size * sizeof(int), cudaMemcpyHostToDevice);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
+
+    cudaStatus = cudaMemcpy(dev_b, b, size * sizeof(int), cudaMemcpyHostToDevice);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
+
+    // Launch a kernel on the GPU with one thread for each element.
+    addKernel<<<1, size>>>(dev_c, dev_a, dev_b);
+
+    // Check for any errors launching the kernel
+    cudaStatus = cudaGetLastError();
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "addKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
+        goto Error;
+    }
+    
+    // cudaDeviceSynchronize waits for the kernel to finish, and returns
+    // any errors encountered during the launch.
+    cudaStatus = cudaDeviceSynchronize();
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching addKernel!\n", cudaStatus);
+        goto Error;
+    }
+
+    // Copy output vector from GPU buffer to host memory.
+    cudaStatus = cudaMemcpy(c, dev_c, size * sizeof(int), cudaMemcpyDeviceToHost);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
+
+Error:
+    cudaFree(dev_c);
+    cudaFree(dev_a);
+    cudaFree(dev_b);
+    
+    return cudaStatus;
+}
+*/

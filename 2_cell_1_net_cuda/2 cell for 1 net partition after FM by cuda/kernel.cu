@@ -78,7 +78,7 @@ void init_graph(GPart_Graph& graph, const string&cell_file, const string&net_fil
         ifstream fin;
         fin.open(cell_file);
         string cell_id, area;
-        unordered_map<int, int>cell_input_id_to_area;//v[cell_input_id]=area
+        unordered_map<int, int>cell_input_id_to_area;//a[cell_input_id]=area
         while (fin >> cell_id)//O(#cells)
         {
             fin >> area;
@@ -150,15 +150,13 @@ void init_graph(GPart_Graph& graph, const string&cell_file, const string&net_fil
     }
 	int lb, ub;
     tie(lb, ub) = [&graph]( const /*double r*/unsigned P, const /*double epsilon*/unsigned x)->pair<int, int> {
-        int  max_area = 0;
         graph.total_area = 0;
         for (auto& node : graph.nodes) {
             graph.total_area += node.area;
-            if (node.area > max_area) max_area = node.area;
         }
         //definition of https://chriswalshaw.co.uk/partition/
         //int  S_opt = ceil(r * graph.total_area);//double不准
-        int  S_opt = (graph.total_area + P - 1) / P;
+		int  S_opt = (graph.total_area + P - 1) / P;//ceil(1.0*graph.total_area/P)用double不准
         //int max_S_p =floor( (1 + epsilon) * S_opt);
         int max_S_p = S_opt * (100 + x) / 100;
         return { graph.total_area - max_S_p, max_S_p };
@@ -190,7 +188,6 @@ int random_init_task(GPart_Graph& graph,
             }
         }
     }
-	//sort(task.nodes.begin(), task.nodes.end());//find idx in O(logn) by binary search
     {
         struct cout_part_format {
             int cell_num = 0;
@@ -257,14 +254,14 @@ void profile_graph(const GPart_Graph& graph)
 struct cost_type {
     int cut_cost;
     int balance_cost;
-    int move_idx;
+    unsigned move_idx;
     __host__ __device__ bool operator<(const cost_type&right) {
         if (cut_cost < right.cut_cost)return true;
         if (cut_cost == right.cut_cost && balance_cost < right.balance_cost)return true;
 		return false;
     }
 };
-cost_type evaluate(const GPart_Graph& graph, const GPart_Task& task, int move_idx, vector<int>& tmp_part_idx, 
+cost_type evaluate(const GPart_Graph& graph, const GPart_Task& task, unsigned move_idx, vector<int>& tmp_part_idx, 
     int task_cut_cost){
     unsigned area[2] = { 0, 0 };
     for (unsigned i = 0; i < task.nodes.size(); i++) {
@@ -298,8 +295,9 @@ cost_type evaluate(const GPart_Graph& graph, const GPart_Task& task, int move_id
 void evaluate_array(vector<cost_type>& cost, const GPart_Graph& graph, const GPart_Task& task, 
 	int task_cut_cost, unsigned num_explores) {//openmp parallel for
     vector<int>tmp_part_idx(graph.nodes.size(), -1);
-    int cpu_thread_num = 1, thread_idx = 0, move_idx = thread_idx;
-    cost[thread_idx] = { INT_MAX,INT_MAX,0 };
+    int cpu_thread_num = 1;
+    unsigned thread_idx = 0, move_idx = thread_idx;
+    cost[thread_idx] = { graph.total_edge_weight,graph.total_area,0 };
     for (; move_idx < num_explores; move_idx += cpu_thread_num) {
         auto now_cost =  evaluate(graph, task, move_idx, tmp_part_idx, task_cut_cost);
         for (unsigned i = 0; i < task.nodes.size(); i++) {
@@ -349,8 +347,8 @@ struct device_task {
 		return nodes_num;
 	}
 };
-__device__ cost_type device_evaluate(const device_graph& graph, const device_task& task, int move_idx,
-    int tmp_part_idx[], int task_cut_cost) {
+__device__ cost_type device_evaluate(const device_graph& graph, const device_task& task, unsigned move_idx,
+    int tmp_part_idx[]/*, int task_cut_cost*/) {
     unsigned area[2] = { 0, 0 };
     for (unsigned i = 0; i < task.nodes_num; i++) {
         const auto& node = graph.nodes[task.nodes[i]];
@@ -388,10 +386,10 @@ __global__  void evaluate_array_kernel(cost_type* cost, device_graph* device_gra
 
     unsigned stride = blockDim.x * gridDim.x;
 	int tmp_part_idx[MAX_TASK_SIZE];
-    cost[cost_idx] = { INT_MAX,INT_MAX,0 };
+    cost[cost_idx] = { device_graph1_p->total_edge_weight,device_graph1_p->total_area,0 };
     for (; move_idx < num_explores; move_idx += stride) {
         for (int i = 0; i < device_task1_p->nodes_num; i++)tmp_part_idx[i] = -1;
-        cost_type now_cost = device_evaluate(*device_graph1_p, *device_task1_p, move_idx, tmp_part_idx, task_cut_cost);
+        cost_type now_cost = device_evaluate(*device_graph1_p, *device_task1_p, move_idx, tmp_part_idx/*, task_cut_cost*/);
         if ( now_cost<cost[cost_idx] )cost[cost_idx] = now_cost;
     }
 }
@@ -424,9 +422,11 @@ int main(int argc, char* argv[]) {
     printf("Initi partition:\n");
     profile_graph(graph);
 
-    unsigned num_trails =10;
+    unsigned num_trails =1000;
     int task_size = min(MAX_TASK_SIZE, (int)graph.nodes.size());
     double total_time = 0;
+	ofstream cost_fout("cost.txt");
+	cost_fout << "initial cut cost " << graph.cut_cost << " , balance cost " << labs(graph.parts[A].area - graph.parts[B].area) << endl;
     GPart_Task task;
     for (unsigned round = 1; round <= num_trails; round++) {
         auto wcts = std::chrono::system_clock::now();
@@ -455,7 +455,7 @@ int main(int argc, char* argv[]) {
                 device_task_cpu.nodes_num = task.nodes.size();
 				
                 device_task::hash_node* hash_data = new device_task::hash_node[3 * task.nodes.size()];
-				for (int i = 0; i <  task.nodes.size(); i++)hash_data[i] = device_task::hash_node{ -1,-1,-1 };
+				for (int i = 0; i <  2*task.nodes.size(); i++)hash_data[i] = device_task::hash_node{ -1,-1,-1 };
                 for (int i = 0, free_idx = 2 * task.nodes.size();i < task.nodes.size(); i++) {
                     int hash_idx = task.nodes[i] % (2 * task.nodes.size());
 					//list head is hash_data[0~2*task.nodes.size()-1], list node is hash_data[2*task.nodes.size()~],load factor=1/2
@@ -529,11 +529,13 @@ int main(int argc, char* argv[]) {
         cost_type best_cost{ INT_MAX,INT_MAX ,0};
         for (int j = 0; j < cost.size(); j++) { //可以用parallel reduction (log(n) complexity)
 			if (cost[j] < best_cost) {
-				cout << "find better move: cut cost " << cost[j].cut_cost << ", balance cost " << cost[j].balance_cost << endl;
+				/*cout << "find better move: from cut cost " << best_cost.cut_cost + graph.cut_cost <<
+					", balance cost " << best_cost.balance_cost<<" to cut cost " << cost[j].cut_cost+graph.cut_cost 
+                    << ", balance cost "<< cost[j].balance_cost << endl;*/
                 best_cost = cost[j];
             }
         }
-        cout<< "best cost: cut cost " << best_cost.cut_cost
+       cost_fout<< "best cost: cut cost " << best_cost.cut_cost + graph.cut_cost
 			<< ", balance cost " << best_cost.balance_cost << endl;
 
         commit(graph, task, best_cost.move_idx);
@@ -547,6 +549,7 @@ int main(int argc, char* argv[]) {
         profile_graph(graph);
         fflush(stdout);
     }
+	cost_fout.close();
     fout2.close();
     printf("average time: %.2lf seconds\n", total_time / num_trails);
     cudaStatus = cudaDeviceReset();
