@@ -183,7 +183,7 @@ vector<int>get_random_i1_and_no_repeat_vector_from_i2(const myGraph& G,
 	else {
 
 		unordered_set<int> selected_int;
-		for (int i = 2; i < i1; i++) {
+		for (int i = 0; i < i1; i++) {
 			int random_index;
 			do {
 				random_index = randGen.Next(0, i2.size() - 1);

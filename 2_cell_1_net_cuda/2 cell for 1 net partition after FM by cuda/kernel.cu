@@ -347,14 +347,12 @@ struct device_task {
 		return nodes_num;
 	}
 };
-__device__ cost_type device_evaluate(const device_graph& graph, const device_task& task, unsigned move_idx,
-    int tmp_part_idx[]/*, int task_cut_cost*/) {
+__device__ cost_type device_evaluate(const device_graph& graph, const device_task& task, unsigned move_idx/*, int task_cut_cost*/) {
     unsigned area[2] = { 0, 0 };
     for (unsigned i = 0; i < task.nodes_num; i++) {
         const auto& node = graph.nodes[task.nodes[i]];
         unsigned part = ((move_idx & (1 << i)) != 0);
         //tmp_part_idx[task.nodes[i]] = part;
-        tmp_part_idx[i] = part;
         area[part] += node.area;
     }
     for (unsigned i = 0; i < 2; i++) {
@@ -372,9 +370,9 @@ __device__ cost_type device_evaluate(const device_graph& graph, const device_tas
         const auto& n2 = graph.nodes[edge.node_idx2];
         int idx;
         //unsigned part1 = (tmp_part_idx[edge.node_idx1] != -1) ? tmp_part_idx[edge.node_idx1] : n1.part_idx;
-        unsigned part1 = ((idx = task.node_idx_to_task_idx(edge.node_idx1)) < task.nodes_num) ? tmp_part_idx[idx] : n1.part_idx;
+        unsigned part1 = ((idx = task.node_idx_to_task_idx(edge.node_idx1)) < task.nodes_num) ? ((move_idx & (1 << idx)) != 0) : n1.part_idx;
         //unsigned part2 = (tmp_part_idx[edge.node_idx2] != -1) ? tmp_part_idx[edge.node_idx2] : n2.part_idx;
-        unsigned part2 = ((idx = task.node_idx_to_task_idx(edge.node_idx2)) < task.nodes_num) ? tmp_part_idx[idx] : n2.part_idx;
+        unsigned part2 = ((idx = task.node_idx_to_task_idx(edge.node_idx2)) < task.nodes_num) ? ((move_idx & (1 << idx)) != 0) : n2.part_idx;
         if (part1 != part2) 
             cut_cost += edge.weight;
     }
@@ -385,11 +383,9 @@ __global__  void evaluate_array_kernel(cost_type* cost, device_graph* device_gra
     unsigned cost_idx = blockIdx.x * blockDim.x + threadIdx.x,  move_idx = cost_idx;
 
     unsigned stride = blockDim.x * gridDim.x;
-	int tmp_part_idx[MAX_TASK_SIZE];
     cost[cost_idx] = { device_graph1_p->total_edge_weight,device_graph1_p->total_area,0 };
     for (; move_idx < num_explores; move_idx += stride) {
-        for (int i = 0; i < device_task1_p->nodes_num; i++)tmp_part_idx[i] = -1;
-        cost_type now_cost = device_evaluate(*device_graph1_p, *device_task1_p, move_idx, tmp_part_idx/*, task_cut_cost*/);
+        cost_type now_cost = device_evaluate(*device_graph1_p, *device_task1_p, move_idx/*, task_cut_cost*/);
         if ( now_cost<cost[cost_idx] )cost[cost_idx] = now_cost;
     }
 }
@@ -434,95 +430,85 @@ int main(int argc, char* argv[]) {
         update_graph(graph, task, false);
 
         unsigned num_explores = 1 << task_size;
-        //printf("num explores %d\n", num_explores);
         vector<cost_type> cost;
-        //evaluate_cost_array
-        //[&cost, &graph, &task, &tmp_part_idx, task_cut_cost, num_explores, use_cuda]()
         {
-            if (use_cuda) {
-                int threadsPerBlock = 512;
-                int blocksPerGrid = 16;
-				cost.resize(blocksPerGrid * threadsPerBlock);
-                cost_type* dev_cost;
-                cudaMalloc(&dev_cost, blocksPerGrid * threadsPerBlock * sizeof(cost_type));
+            int threadsPerBlock = 512;
+            int blocksPerGrid = 16;
+            cost.resize(blocksPerGrid * threadsPerBlock);
+            cost_type* dev_cost;
+            cudaMalloc(&dev_cost, blocksPerGrid * threadsPerBlock * sizeof(cost_type));
 
-                device_task*device_task1_p;
-				cudaMalloc(&device_task1_p, sizeof(device_task));
-				device_task device_task_cpu;
+            device_task* device_task1_p;
+            cudaMalloc(&device_task1_p, sizeof(device_task));
+            device_task device_task_cpu;
 
-                cudaMalloc(&device_task_cpu.nodes, task.nodes.size() * sizeof(int));
-                cudaMemcpy(device_task_cpu.nodes, task.nodes.data(), task.nodes.size() * sizeof(int), cudaMemcpyHostToDevice);
-                device_task_cpu.nodes_num = task.nodes.size();
-				
-                device_task::hash_node* hash_data = new device_task::hash_node[3 * task.nodes.size()];
-				for (int i = 0; i <  2*task.nodes.size(); i++)hash_data[i] = device_task::hash_node{ -1,-1,-1 };
-                for (int i = 0, free_idx = 2 * task.nodes.size();i < task.nodes.size(); i++) {
-                    int hash_idx = task.nodes[i] % (2 * task.nodes.size());
-					//list head is hash_data[0~2*task.nodes.size()-1], list node is hash_data[2*task.nodes.size()~],load factor=1/2
-                    hash_data[free_idx] = device_task::hash_node{ task.nodes[i], i,hash_data[hash_idx].next_idx };
-                    hash_data[hash_idx].next_idx = free_idx;
-                    free_idx++;
-                }
-				cudaMalloc(&device_task_cpu.node_idx_to_task_idx_data, 3* task.nodes.size() * sizeof(device_task::hash_node));
-				cudaMemcpy(device_task_cpu.node_idx_to_task_idx_data, hash_data, 3 * task.nodes.size() * sizeof(device_task::hash_node), cudaMemcpyHostToDevice);
-                delete[] hash_data;
+            cudaMalloc(&device_task_cpu.nodes, task.nodes.size() * sizeof(int));
+            cudaMemcpy(device_task_cpu.nodes, task.nodes.data(), task.nodes.size() * sizeof(int), cudaMemcpyHostToDevice);
+            device_task_cpu.nodes_num = task.nodes.size();
 
-                cudaMalloc(&device_task_cpu.edges, task.edges.size() * sizeof(int));
-                cudaMemcpy(device_task_cpu.edges, task.edges.data(), task.edges.size() * sizeof(int), cudaMemcpyHostToDevice);
-                device_task_cpu.edges_num = task.edges.size();
-
-                cudaMemcpy(device_task1_p, &device_task_cpu, sizeof(device_task), cudaMemcpyHostToDevice);
-
-                device_graph* device_graph1_p;
-				cudaMalloc(&device_graph1_p, sizeof(device_graph));
-				device_graph device_graph_cpu;
-
-				device_graph::device_graph_node* device_graph_cpu_nodes = new device_graph::device_graph_node[graph.nodes.size()];
-                for (int i = 0; i < graph.nodes.size(); i++) 
-                    device_graph_cpu_nodes[i] = device_graph::device_graph_node{ graph.nodes[i].area,graph.nodes[i].part_idx };				
-				cudaMalloc(&device_graph_cpu.nodes, graph.nodes.size() * sizeof(device_graph::device_graph_node));
-                cudaMemcpy(device_graph_cpu.nodes, device_graph_cpu_nodes, graph.nodes.size() * sizeof(device_graph::device_graph_node), cudaMemcpyHostToDevice);
-                delete[] device_graph_cpu_nodes;
-                device_graph_cpu.total_area = graph.total_area;
-                device_graph_cpu.total_edge_weight = graph.total_edge_weight;
-                for (int i = 0; i < 2; i++) {
-                    device_graph_cpu.parts[i] = device_graph::device_graph_part{ graph.parts[i].area,graph.parts[i].ub };
-				}
-
-				device_graph::device_graph_edge* device_graph_cpu_edges = new device_graph::device_graph_edge[graph.edges.size()];
-                for (int i = 0; i < graph.edges.size(); i++)
-					device_graph_cpu_edges[i] = device_graph::device_graph_edge{ graph.edges[i].node_idx1,graph.edges[i].node_idx2,graph.edges[i].weight };
-                cudaMalloc(&device_graph_cpu.edges, graph.edges.size() * sizeof(device_graph::device_graph_edge));
-                cudaMemcpy(device_graph_cpu.edges, device_graph_cpu_edges, graph.edges.size() * sizeof(device_graph::device_graph_edge), cudaMemcpyHostToDevice);
-                delete[] device_graph_cpu_edges;
-                cudaMemcpy(device_graph1_p, &device_graph_cpu, sizeof(device_graph), cudaMemcpyHostToDevice);
-				
-                evaluate_array_kernel << <blocksPerGrid, threadsPerBlock >> > (
-                    dev_cost,
-                    device_graph1_p,
-                    device_task1_p,
-                    task_cut_cost,
-					num_explores
-                    );
-                cudaDeviceSynchronize();
-				cudaMemcpy(cost.data(), dev_cost, blocksPerGrid * threadsPerBlock * sizeof(cost_type), cudaMemcpyDeviceToHost);
-                cudaFree(dev_cost);
-
-				cudaFree(device_task_cpu.node_idx_to_task_idx_data);
-				cudaFree(device_task_cpu.edges);
-				cudaFree(device_task_cpu.nodes);
-				cudaFree(device_task1_p);
-
-				cudaFree(device_graph_cpu.edges);
-				cudaFree(device_graph_cpu.nodes);
-				cudaFree(device_graph1_p);
-
+            device_task::hash_node* hash_data = new device_task::hash_node[3 * task.nodes.size()];
+            for (int i = 0; i < 2 * task.nodes.size(); i++)hash_data[i] = device_task::hash_node{ -1,-1,-1 };
+            for (int i = 0, free_idx = 2 * task.nodes.size(); i < task.nodes.size(); i++) {
+                int hash_idx = task.nodes[i] % (2 * task.nodes.size());
+                //list head is hash_data[0~2*task.nodes.size()-1], list node is hash_data[2*task.nodes.size()~],load factor=1/2
+                hash_data[free_idx] = device_task::hash_node{ task.nodes[i], i,hash_data[hash_idx].next_idx };
+                hash_data[hash_idx].next_idx = free_idx;
+                free_idx++;
             }
-            else {
-                int cpu_thread_num = 1;
-				cost.resize(cpu_thread_num);
-                evaluate_array(cost, graph, task, task_cut_cost, num_explores);
+            cudaMalloc(&device_task_cpu.node_idx_to_task_idx_data, 3 * task.nodes.size() * sizeof(device_task::hash_node));
+            cudaMemcpy(device_task_cpu.node_idx_to_task_idx_data, hash_data, 3 * task.nodes.size() * sizeof(device_task::hash_node), cudaMemcpyHostToDevice);
+            delete[] hash_data;
+
+            cudaMalloc(&device_task_cpu.edges, task.edges.size() * sizeof(int));
+            cudaMemcpy(device_task_cpu.edges, task.edges.data(), task.edges.size() * sizeof(int), cudaMemcpyHostToDevice);
+            device_task_cpu.edges_num = task.edges.size();
+
+            cudaMemcpy(device_task1_p, &device_task_cpu, sizeof(device_task), cudaMemcpyHostToDevice);
+
+            device_graph* device_graph1_p;
+            cudaMalloc(&device_graph1_p, sizeof(device_graph));
+            device_graph device_graph_cpu;
+
+            device_graph::device_graph_node* device_graph_cpu_nodes = new device_graph::device_graph_node[graph.nodes.size()];
+            for (int i = 0; i < graph.nodes.size(); i++)
+                device_graph_cpu_nodes[i] = device_graph::device_graph_node{ graph.nodes[i].area,graph.nodes[i].part_idx };
+            cudaMalloc(&device_graph_cpu.nodes, graph.nodes.size() * sizeof(device_graph::device_graph_node));
+            cudaMemcpy(device_graph_cpu.nodes, device_graph_cpu_nodes, graph.nodes.size() * sizeof(device_graph::device_graph_node), cudaMemcpyHostToDevice);
+            delete[] device_graph_cpu_nodes;
+            device_graph_cpu.total_area = graph.total_area;
+            device_graph_cpu.total_edge_weight = graph.total_edge_weight;
+            for (int i = 0; i < 2; i++) {
+                device_graph_cpu.parts[i] = device_graph::device_graph_part{ graph.parts[i].area,graph.parts[i].ub };
             }
+
+            device_graph::device_graph_edge* device_graph_cpu_edges = new device_graph::device_graph_edge[graph.edges.size()];
+            for (int i = 0; i < graph.edges.size(); i++)
+                device_graph_cpu_edges[i] = device_graph::device_graph_edge{ graph.edges[i].node_idx1,graph.edges[i].node_idx2,graph.edges[i].weight };
+            cudaMalloc(&device_graph_cpu.edges, graph.edges.size() * sizeof(device_graph::device_graph_edge));
+            cudaMemcpy(device_graph_cpu.edges, device_graph_cpu_edges, graph.edges.size() * sizeof(device_graph::device_graph_edge), cudaMemcpyHostToDevice);
+            delete[] device_graph_cpu_edges;
+            cudaMemcpy(device_graph1_p, &device_graph_cpu, sizeof(device_graph), cudaMemcpyHostToDevice);
+
+            evaluate_array_kernel << <blocksPerGrid, threadsPerBlock >> > (
+                dev_cost,
+                device_graph1_p,
+                device_task1_p,
+                task_cut_cost,
+                num_explores
+                );
+            cudaDeviceSynchronize();
+            cudaMemcpy(cost.data(), dev_cost, blocksPerGrid * threadsPerBlock * sizeof(cost_type), cudaMemcpyDeviceToHost);
+            cudaFree(dev_cost);
+
+            cudaFree(device_task_cpu.node_idx_to_task_idx_data);
+            cudaFree(device_task_cpu.edges);
+            cudaFree(device_task_cpu.nodes);
+            cudaFree(device_task1_p);
+
+            cudaFree(device_graph_cpu.edges);
+            cudaFree(device_graph_cpu.nodes);
+            cudaFree(device_graph1_p);
+
         }
 
         // 找出 best_move
